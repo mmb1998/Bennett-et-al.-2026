@@ -1,0 +1,187 @@
+function play_sound_set(start_freq, end_freq, freq_step, start_amp, end_amp, amp_step, t, t_delay, ramp, trigger_enable, repeat_enable, repeat_times, stimulus_enable, stim_time, delay_enable, delay_time)%nidaq sampling rate
+global Fs;
+Fs = 16000; %Hz
+
+%stimulus_enable = false; %whether to stim or not
+nidaq_device = 'Dev2'; %change to device name
+nidaq_ai_channel = 'ai0'; %not used currently
+nidaq_ao_channel = 'ao0'; %sound generation
+nidaq_di_channel_start = 'PFI0'; %sound start trigger_enable
+nidaq_do_channel_start = 'port0/line1'; %imaging acquisition start trigger_enable %for triggering 2p acquisition, also can use for finding timing of sound start
+nidaq_do_channel_stimulus = 'port0/line0'; %stimulus_enable (e.g. red light for CsChrimson)
+nidaq_samp_rate = Fs;
+%pv_mic_serial_port = 'COM3';
+
+
+if nargin <= 15
+    delay_enable = false;
+    delay_time = 0;
+end
+if nargin <= 13
+    stimulus_enable = false;
+    stim_time = 1;
+end
+if nargin <= 11
+    repeat_enable = false;
+    repeat_times = 1;
+end
+if nargin <= 10
+    trigger_enable = false;
+end
+if nargin <= 9
+    ramp = 0.05;
+end
+if ~repeat_enable
+    repeat_times = 1;
+end
+assert(isnumeric(freq_hz) && isnumeric(t), 'Frequency and output time needs to be numeric')
+assert(ramp*2 < t, 'Ramp time needs to be at least 2x smaller than total output time')
+
+%freqs = freq_hz;
+%ramp=0.05;
+pre=0; %was 5
+len=t; %duration of sound delivery, was 0.5
+post=0;
+nreps=1;
+amp = 0.0174; %multiplier for daq output
+
+stimulus_pre_delay = 0;
+stimulus_length = stim_time;
+
+
+SESSION = daq.createSession('ni'); %these should be set in calibrate_mic instead
+%addAnalogInputChannel(SESSION, nidaq_device, nidaq_ai_channel, 'Voltage');
+addAnalogOutputChannel(SESSION, nidaq_device, nidaq_ao_channel, 'Voltage');
+addDigitalChannel(SESSION, nidaq_device, nidaq_do_channel_start, 'OutputOnly');
+if trigger_enable
+    addTriggerConnection(SESSION, 'external', strcat(nidaq_device, '/', nidaq_di_channel_start), 'StartTrigger')
+    SESSION.Connections(1).TriggerCondition = 'RisingEdge'
+    %if repeat_enable %only works for acquisitions
+    %    SESSION.TriggersPerRun = repeat_times;
+    %end
+end
+
+curr_freq = start_freq;
+curr_amp = start_amp;
+out=[];
+start_trigger_data = [];
+while curr_freq <= end_freq
+    temp_out=10.*my_env(sin(2*pi*curr_freq*(1:round(len*Fs))/Fs),'cosine',ramp,ramp,Fs);
+    %max of 10 volts
+    temp_out=[zeros(1,round(pre*Fs)), out, zeros(1,round(post*Fs))];
+    while curr_amp <= end_amp
+        out=[out, zeros(1, round(t_delay*Fs)), temp_out.*amp.*curr_amp]
+        %out_idx=ceil((shift+pre+2*ramp)*Fs):floor((shift+pre+len-2*ramp)*Fs);
+        out_idx = size(temp_out, 2);
+        %this is for trigger_enable output e.g. for 2p
+        temp_start_trigger_data = ones(1, size(out, 2));
+        temp_start_trigger_data = [start_trigger_data, zeros(1, out_idx - size(start_trigger_data,2))];
+        start_trigger_data = [start_trigger_data, zeros(1, round(t_delay*Fs)), temp_start_trigger_data];
+        curr_amp = curr_amp + amp_step;
+        if curr_amp > end_amp
+            curr_amp = end_amp;
+        end
+    end
+    curr_freq = curr_freq + freq_step;
+    if curr_freq > end_freq
+        curr_freq = end_freq;
+    end
+end
+out_idx = size(out, 2);
+
+if stimulus_enable == true
+    addDigitalChannel(SESSION, nidaq_device, nidaq_do_channel_stimulus, 'OutputOnly');
+    if stimulus_pre_delay > 0
+        stimulus_data = zeros(1,round(stimulus_pre_delay*Fs))
+    else
+        stimulus_data = [];
+    end
+    
+    stim_idx = round(stimulus_length*Fs);
+    if (stim_idx + size(stimulus_data,1)) > out_idx
+        stimulus_data = [stimulus_data, ones(1, out_idx - size(stimulus_data,1) - 1), 0];
+    else
+        stimulus_data = [stimulus_data, ones(1,stim_idx), zeros(1,(out_idx - stim_idx - size(stimulus_data,1)))];
+    end
+end
+    
+%global SESSION pv_usb_mic;
+
+%pv_mic = PvMicUSB(pv_mic_serial_port,8000);
+%pv_mic.On();
+
+in1 = [];
+
+%out=out./(10^(atten/20));
+%out=out.*0.174; %for now (testing, just scale output to max level possible for output to a +4 dbu amp
+%out = out.*amp; 
+%preload(SESSION,transpose(out));
+
+if delay_enable
+    furtherdelay_data = zeros(1, round(delay_time*Fs));
+    out = [furtherdelay_data, out];
+    start_trigger_data = [furtherdelay_data, start_trigger_data];
+    if stimulus_enable == true
+        %not entirely correct
+        stimulus_data = [ones(1, size(out, 2) - 1), 0];
+    end
+end
+
+if stimulus_enable == true
+    queueOutputData(SESSION,[out',start_trigger_data',stimulus_data'])
+else
+    queueOutputData(SESSION,[out',start_trigger_data'])
+end
+SESSION.Rate = nidaq_samp_rate
+%session_listener = SESSION.addlistener('DataAvailable',@save_data);
+
+%temp = floor(pv_mic.SerialPortObject.NumBytesAvailable/2);
+%pv_mic.SerialPortObject.flush();
+startBackground(SESSION);
+fprintf('Starting sound output at %d Hz for %d length for %d repeats\n',freq_hz,t,repeat_times);
+if trigger_enable
+    fprintf('Waiting for trigger on channel %s\n', nidaq_di_channel_start);
+end
+
+current_repeat_time = 1
+%monitor whether output has finished, repeat as many times as specified
+while current_repeat_time <= repeat_times
+    if SESSION.IsDone
+       fprintf('Repeat %d complete\n', current_repeat_time);
+       current_repeat_time = current_repeat_time + 1;
+       if current_repeat_time <= repeat_times
+            if stimulus_enable
+                queueOutputData(SESSION,[out',start_trigger_data',stimulus_data']);
+            else
+                queueOutputData(SESSION,[out',start_trigger_data']);
+            end
+            startBackground(SESSION);
+       end
+    end
+    pause(0.01)
+end
+
+fprintf('Sound output complete\n')
+
+%startForeground(SESSION);
+
+%in2 = pv_mic.RecordPrecise(6000,temp)./3276; %change this time
+%in2 = pv_mic.Record(12000)./3276;
+
+%pv_mic.delete();
+%figure(1);
+%subplot(1,2,1);
+%plot(linspace(1/numel(out),numel(out)/Fs,numel(out)),in1);
+%hold on;
+%subplot(1,2,2);
+%plot(linspace(1/12000,1.5,12000),in2);
+%hold off;
+
+    function save_data(src, event)
+        %plot(event.TimeStamps,event.Data)
+        in1 = [in1;event.Data];
+    end
+    function clear_pv_mic_buffer(src, event)
+        read(pv_mic.SerialPortObject,40000,'int16');
+    end
+end
