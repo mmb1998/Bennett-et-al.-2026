@@ -1,0 +1,9 @@
+title = name
+nidaq_model = USB-6211
+nidaq_device = Dev2
+nidaq_ao_channel = ao1
+nidaq_do_channel_start = ctr0
+nidaq_do_channel_stimulus = ao0
+nidaq_ai_channel = ai0
+nidaq_external_trig = TRUE
+nidaq_di_channel_trig = PFI0
