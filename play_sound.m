@@ -15,8 +15,8 @@ nreps=3;
 amp = 0.173; %multiplier for daq output
 
 stimulus_pre_delay = 0; %s
-stimulus_length = 10; %s
-stimulus_freq = 20; %Hz
+stimulus_length = 30; %s
+stimulus_freq = 200; %Hz
 stimulus_duty_cycle = 0.1; %fraction
 
 [session, nidaq_model] = nidaq_setup(Fs, stimulus);
